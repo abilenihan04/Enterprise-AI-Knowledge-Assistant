@@ -1,0 +1,226 @@
+{% extends "base.html" %}
+
+{% block title %}Enterprise AI Knowledge Assistant{% endblock %}
+
+{% block extra_head %}
+<style>
+    /* Home page specific styles */
+</style>
+{% endblock %}
+
+{% block content %}
+    <!-- Page Header -->
+    <h2>Enterprise AI Knowledge Assistant</h2>
+    
+    <!-- Section: Insert New Documents -->
+    <h3>Insert Data</h3>
+    <form id="insertForm" enctype="multipart/form-data">
+        <!-- Document Name Field (Auto-filled from file if not manually entered) -->
+        <input type="text" id="documentName" name="document_name" placeholder="Document Name (auto-filled from file)" style="width: 80%; padding: 10px; margin-bottom: 10px; border: 1px solid #ccc; border-radius: 4px;">
+        <br>
+        
+        <!-- Category Field with Autocomplete (Mandatory) -->
+        <input type="text" id="documentCategory" name="document_category" list="categoryList" placeholder="Category (e.g., HR, Finance, Policies) *" required style="width: 80%; padding: 10px; margin-bottom: 10px; border: 1px solid #ccc; border-radius: 4px;">
+        <datalist id="categoryList">
+            <option value="">Loading categories...</option>
+        </datalist>
+        <br>
+        
+        <!-- Text Input Field (Optional) -->
+        <input type="text" name="document_text" placeholder="Enter document text to store in the knowledge base..." style="margin-bottom: 10px;">
+        <br>
+        
+        <!-- File Upload Field (Optional) -->
+        <p style="font-size: 14px; color: #666;">Or upload a file (.txt, .csv, .json, .md, .log, .pdf, .docx, .pptx, .xlsx, .html, .epub):</p>
+        <input type="file" name="document_file" id="documentFile" accept=".txt,.csv,.json,.md,.log,.pdf,.docx,.pptx,.xlsx,.html,.htm,.epub" onchange="autoFillName()" style="margin-bottom: 10px;">
+        <br>
+        
+        <!-- Submit Button -->
+        <button type="button" onclick="handleInsert()">Store Document</button>
+    </form>
+{% endblock %}
+
+{% block scripts %}
+    // Initialize page on load
+    // ========================================
+    window.onload = function() {
+        loadCategories();
+    };
+
+    // ========================================
+    // Auto-fill document name from file upload
+    // ========================================
+    function autoFillName() {
+        const fileInput = document.getElementById('documentFile');
+        const nameInput = document.getElementById('documentName');
+        
+        // Only auto-fill if the name field is empty (user hasn't manually entered a name)
+        if (fileInput.files.length > 0 && !nameInput.value.trim()) {
+            const fileName = fileInput.files[0].name;
+            // Remove file extension
+            const nameWithoutExt = fileName.replace(/\.[^/.]+$/, "");
+            nameInput.value = nameWithoutExt;
+        }
+    }
+
+    // ========================================
+    // Load existing categories from database
+    // ========================================
+    function loadCategories() {
+        fetch('/categories')
+            .then(response => response.json())
+            .then(data => {
+                if (data.status === 'success') {
+                    const datalist = document.getElementById('categoryList');
+                    datalist.innerHTML = '';
+                    data.categories.forEach(category => {
+                        const option = document.createElement('option');
+                        option.value = category;
+                        datalist.appendChild(option);
+                    });
+                }
+            })
+            .catch(error => {
+                console.error('Error loading categories:', error);
+            });
+    }
+
+    // ========================================
+    // Handle document insertion
+    // ========================================
+    function handleInsert() {
+        // Get form values
+        const name = document.getElementById('documentName').value.trim();
+        const category = document.getElementById('documentCategory').value.trim();
+        
+        // Validate mandatory fields (name is now optional - will use filename if not provided)
+        if (!category) {
+            alert('Please enter a category.');
+            return;
+        }
+        
+        // Prepare form data
+        const form = document.getElementById('insertForm');
+        const formData = new FormData(form);
+        
+        // Send to backend
+        fetch('/insert', {
+            method: 'POST',
+            body: formData
+        })
+        .then(response => {
+            // Check if response is JSON
+            const contentType = response.headers.get('content-type');
+            if (contentType && contentType.includes('application/json')) {
+                return response.json();
+            } else {
+                // If not JSON, return error with status text
+                return response.text().then(text => {
+                    throw new Error(`Server error: ${response.status} - ${text}`);
+                });
+            }
+        })
+        .then(data => {
+            if (data.status === 'success') {
+                alert('Document stored successfully!');
+                loadCategories(); // Reload categories
+                window.location.href = '/';
+            } else if (data.status === 'duplicate') {
+                // Ask user if they want to replace the existing document
+                if (confirm(data.message + '\n\nDo you want to replace the existing document?')) {
+                    // Replace the existing document
+                    replaceDocument(data.existing_id, formData);
+                }
+                // If user cancels, do nothing
+            } else {
+                alert('Error: ' + data.message);
+            }
+        })
+        .catch(error => {
+            alert('Error storing document: ' + error.message);
+        });
+    }
+
+    // ========================================
+    // Replace existing document
+    // ========================================
+    function replaceDocument(docId, formData) {
+        // For file uploads, we need to send as FormData
+        const file = formData.get('document_file');
+        
+        if (file && file.size > 0) {
+            // Send as FormData for file upload
+            const updateFormData = new FormData();
+            updateFormData.append('document_name', formData.get('document_name'));
+            updateFormData.append('document_category', formData.get('document_category'));
+            updateFormData.append('document_file', file);
+            
+            fetch(`/update/${docId}`, {
+                method: 'POST',
+                body: updateFormData
+            })
+            .then(response => {
+                const contentType = response.headers.get('content-type');
+                if (contentType && contentType.includes('application/json')) {
+                    return response.json();
+                } else {
+                    return response.text().then(text => {
+                        throw new Error(`Server error: ${response.status} - ${text}`);
+                    });
+                }
+            })
+            .then(data => {
+                if (data.status === 'success') {
+                    alert('Document replaced successfully!');
+                    loadCategories(); // Reload categories
+                    window.location.href = '/';
+                } else {
+                    alert('Error replacing document: ' + data.message);
+                }
+            })
+            .catch(error => {
+                alert('Error replacing document: ' + error.message);
+            });
+        } else {
+            // Send as URLSearchParams for text input
+            const content = formData.get('document_text');
+            const name = formData.get('document_name');
+            const category = formData.get('document_category');
+            
+            const params = new URLSearchParams();
+            params.append('document_name', name);
+            params.append('document_category', category);
+            params.append('document_text', content);
+            
+            fetch(`/update/${docId}`, {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/x-www-form-urlencoded',
+                },
+                body: params
+            })
+            .then(response => {
+                const contentType = response.headers.get('content-type');
+                if (contentType && contentType.includes('application/json')) {
+                    return response.json();
+                } else {
+                    return response.text().then(text => {
+                        throw new Error(`Server error: ${response.status} - ${text}`);
+                    });
+                }
+            })
+            .then(data => {
+                if (data.status === 'success') {
+                    alert('Document replaced successfully!');
+                    loadCategories(); // Reload categories
+                    window.location.href = '/';
+                } else {
+                    alert('Error replacing document: ' + data.message);
+                }
+            })
+            .catch(error => {
+                alert('Error replacing document: ' + error.message);
+            });
+        }
+    }
+{% endblock %}

@@ -1,0 +1,71 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>{% block title %}Enterprise AI Knowledge Assistant{% endblock %}</title>
+    <style>
+        /* Global styles */
+        body { font-family: Arial, sans-serif; margin: 0; background-color: #f9f9f9; }
+        
+        /* Navigation bar styles */
+        .navbar { background-color: #0078D4; padding: 15px 20px; box-shadow: 0 2px 4px rgba(0,0,0,0.1); }
+        .navbar h1 { color: white; margin: 0; font-size: 24px; }
+        .navbar-nav { margin-top: 10px; }
+        .navbar-nav a { color: white; text-decoration: none; margin-right: 20px; font-size: 16px; }
+        .navbar-nav a:hover { text-decoration: underline; }
+        
+        /* Container styles */
+        .container { background-color: white; padding: 20px; border-radius: 8px; box-shadow: 0 2px 4px rgba(0,0,0,0.1); max-width: 600px; margin: 40px auto; }
+        
+        /* Form input styles */
+        input[type=text] { width: 80%; padding: 10px; margin-bottom: 10px; border: 1px solid #ccc; border-radius: 4px; }
+        
+        /* Button styles */
+        button { padding: 10px 15px; background-color: #0078D4; color: white; border: none; border-radius: 4px; cursor: pointer; }
+        button:hover { background-color: #005A9E; }
+        
+        /* Action button styles */
+        .download-btn { padding: 5px 10px; background-color: #28a745; color: white; border: none; border-radius: 4px; cursor: pointer; font-size: 12px; }
+        .download-btn:hover { background-color: #218838; }
+        .update-btn { padding: 5px 10px; background-color: #ffc107; color: black; border: none; border-radius: 4px; cursor: pointer; font-size: 12px; }
+        .update-btn:hover { background-color: #e0a800; }
+        .delete-btn { padding: 5px 10px; background-color: #dc3545; color: white; border: none; border-radius: 4px; cursor: pointer; font-size: 12px; }
+        .delete-btn:hover { background-color: #c82333; }
+        
+        /* Modal styles */
+        .modal { display: none; position: fixed; z-index: 1000; left: 0; top: 0; width: 100%; height: 100%; background-color: rgba(0,0,0,0.5); }
+        .modal-content { background-color: white; margin: 15% auto; padding: 20px; border-radius: 8px; width: 50%; max-width: 500px; }
+        .close { color: #aaa; float: right; font-size: 28px; font-weight: bold; cursor: pointer; }
+        .close:hover { color: black; }
+        
+        /* Result display styles */
+        #documentList { margin-top: 20px; display: none; }
+        pre { white-space: pre-wrap; word-wrap: break-word; max-height: 200px; overflow-y: auto; }
+        
+        /* Status message styles */
+        .success { color: #0078D4; }
+        .error { color: #dc3545; }
+    </style>
+    {% block extra_head %}{% endblock %}
+</head>
+<body>
+    <!-- Navigation Bar -->
+    <div class="navbar">
+        <h1>Enterprise AI Knowledge Assistant</h1>
+        <div class="navbar-nav">
+            <a href="/">Home</a>
+            <a href="/documents">View Documents</a>
+            <a href="/debug">Debug</a>
+        </div>
+    </div>
+    
+    <!-- Main Content Area -->
+    <div class="container">
+        {% block content %}{% endblock %}
+    </div>
+    
+    <!-- Page-specific scripts -->
+    <script>
+        {% block scripts %}{% endblock %}
+    </script>
+</body>
+</html>
