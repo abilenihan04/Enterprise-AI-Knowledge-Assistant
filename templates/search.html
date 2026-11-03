@@ -9,6 +9,7 @@
     .result-meta { font-size: 13px; color: #666; margin-bottom: 8px; }
     .match { background-color: #e7f1fb; color: #0078D4; padding: 2px 8px; border-radius: 10px; font-size: 12px; }
     .snippet { font-size: 14px; color: #333; white-space: pre-wrap; }
+    .keyword { background-color: #eef7ee; color: #2e7d32; padding: 2px 8px; border-radius: 10px; font-size: 12px; margin-left: 4px; }
 </style>
 {% endblock %}
 
@@ -18,6 +19,9 @@
     
     <form id="searchForm" onsubmit="runSearch(); return false;">
         <input type="text" id="question" placeholder="e.g. How should a system give feedback to users?">
+        <select id="categoryFilter">
+            <option value="">All categories</option>
+        </select>
         <button type="submit">Search</button>
     </form>
     
@@ -27,10 +31,26 @@
 
 {% block scripts %}
     // ========================================
+    // Fill the category filter from the categories in the knowledge base
+    // ========================================
+    fetch('/categories')
+        .then(response => response.json())
+        .then(data => {
+            const select = document.getElementById('categoryFilter');
+            (data.categories || []).forEach(category => {
+                const option = document.createElement('option');
+                option.value = category;
+                option.textContent = category;
+                select.appendChild(option);
+            });
+        });
+    
+    // ========================================
     // Send the question to the backend and show the best matches
     // ========================================
     function runSearch() {
         const question = document.getElementById('question').value.trim();
+        const category = document.getElementById('categoryFilter').value;
         const status = document.getElementById('searchStatus');
         const resultsDiv = document.getElementById('results');
         
@@ -44,7 +64,12 @@
         status.className = '';
         resultsDiv.innerHTML = '';
         
-        fetch('/query?q=' + encodeURIComponent(question))
+        let url = '/query?q=' + encodeURIComponent(question);
+        if (category) {
+            url += '&category=' + encodeURIComponent(category);
+        }
+        
+        fetch(url)
             .then(response => response.json())
             .then(data => {
                 if (data.status !== 'success') {
@@ -53,7 +78,8 @@
                     return;
                 }
                 if (data.results.length === 0) {
-                    status.textContent = 'No documents found. Add some documents first.';
+                    status.textContent = 'No documents closely match your question. Try rewording it'
+                        + (category ? ' or searching all categories.' : '.');
                     return;
                 }
                 status.textContent = `Top ${data.results.length} matching documents:`;
@@ -78,6 +104,12 @@
         match.className = 'match';
         match.textContent = Math.round(result.similarity * 100) + '% match';
         title.appendChild(match);
+        if (result.all_keywords_match) {
+            const keyword = document.createElement('span');
+            keyword.className = 'keyword';
+            keyword.textContent = 'contains all your keywords';
+            title.appendChild(keyword);
+        }
         
         const meta = document.createElement('div');
         meta.className = 'result-meta';

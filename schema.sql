@@ -33,3 +33,12 @@ CREATE INDEX IF NOT EXISTS idx_document_chunks_document_id ON document_chunks (d
 -- HNSW index makes "find the most similar chunks" fast; <=> is cosine distance.
 CREATE INDEX IF NOT EXISTS idx_document_chunks_embedding
     ON document_chunks USING hnsw (embedding vector_cosine_ops);
+
+-- Keyword search: each chunk's words, stemmed (e.g. "booking" -> "book") with stop words
+-- removed. Kept up to date automatically by PostgreSQL. The GIN index makes word lookups fast.
+ALTER TABLE document_chunks
+    ADD COLUMN IF NOT EXISTS search_vector tsvector
+    GENERATED ALWAYS AS (to_tsvector('english', content)) STORED;
+
+CREATE INDEX IF NOT EXISTS idx_document_chunks_search
+    ON document_chunks USING gin (search_vector);

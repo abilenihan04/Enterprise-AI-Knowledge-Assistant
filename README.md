@@ -33,12 +33,22 @@ On Linux servers, install the CPU-only PyTorch first to avoid a multi-GB GPU dow
 
 ## Natural language search
 
-The **Ask a Question** page (`/search`, API `GET /query?q=...`) finds documents by meaning
-rather than exact keywords. Each document is split into ~200-word chunks, and each chunk is
+The **Ask a Question** page (`/search`, API `GET /query?q=...&category=...`) finds documents
+from a plain-English question. Each document is split into ~200-word chunks, and each chunk is
 turned into an embedding by the open-source `all-MiniLM-L6-v2` model, which runs locally inside
-the app, so document text is never sent to an external AI service. pgvector then returns the
-chunks closest in meaning to the question (cosine similarity) and the app shows the best
-match per document.
+the app, so document text is never sent to an external AI service.
+
+Search is hybrid (see `search.py`):
+
+- **Semantic search:** pgvector finds the chunks closest in meaning to the question (cosine similarity).
+- **Keyword search:** PostgreSQL full-text search finds chunks containing every word of the
+  question, in the text or the document name. This catches exact terms such as form codes,
+  error numbers and product names, which embeddings often miss.
+- The two ranked lists are merged with Reciprocal Rank Fusion, and the best match per
+  document is shown.
+- Results below a minimum similarity (`MIN_SIMILARITY`) are hidden unless they contain all
+  the keywords, so unrelated documents are not shown just to fill the list.
+- An optional category filter limits the search to one category.
 
 Embeddings are created automatically when a document is added or updated. For documents
 that existed before search was added, run once:
@@ -46,6 +56,21 @@ that existed before search was added, run once:
 ```bash
 python embed_existing_documents.py
 ```
+
+### Sample documents and measuring search quality
+
+`sample_data/` contains synthetic HR, IT, finance, health and safety and facilities policies
+for a fictional company, used to test and demo search. Load or remove them with:
+
+```bash
+python load_sample_documents.py
+python load_sample_documents.py --remove
+```
+
+`evaluation/test_questions.json` lists test questions with the document that should be found
+(or none). `python evaluate_search.py` runs them and reports Top-1, Top-5, MRR and the share of
+no-answer questions correctly returning nothing, for semantic-only and hybrid search.
+`python evaluate_search.py --sweep` shows how the scores change with `MIN_SIMILARITY`.
 
 ## Moving existing documents from ChromaDB
 
@@ -67,7 +92,10 @@ searchable. After checking the documents page, `chroma_data_v2/` can be deleted.
 - `db.py` – PostgreSQL connection pool and table creation
 - `schema.sql` – `documents` and `document_chunks` table definitions
 - `embeddings.py` – local embedding model and document chunking
+- `search.py` – saving chunks and hybrid search
 - `templates/` – HTML pages rendered by Flask
 - `embed_existing_documents.py` – creates embeddings for documents that don't have any
 - `migrate_chroma_to_postgres.py` – one-off copy of old ChromaDB documents into PostgreSQL
+- `load_sample_documents.py`, `sample_data/` – synthetic enterprise documents for testing
+- `evaluate_search.py`, `evaluation/` – test questions and search quality measurement
 - `docker-compose.yml` – local PostgreSQL for development

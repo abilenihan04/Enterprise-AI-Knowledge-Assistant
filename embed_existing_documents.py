@@ -8,8 +8,8 @@ Usage:
 Safe to re-run: documents that already have chunks are skipped.
 """
 
-from app import build_chunks, save_chunks
-from db import pool
+from db import pool, init_db
+from search import build_chunks, save_chunks
 
 
 def main():
@@ -32,4 +32,5 @@ def main():
 
 
 if __name__ == "__main__":
+    init_db()
     main()

@@ -22,7 +22,7 @@ from bs4 import BeautifulSoup
 import io
 
 from db import pool, init_db
-from embeddings import split_into_chunks, embed, to_pgvector
+from search import build_chunks, save_chunks, search_documents
 
 # ========================================
 # FILE EXTRACTION FUNCTIONS
@@ -212,9 +212,6 @@ app = Flask(__name__, template_folder='templates')
 # Connect to PostgreSQL and create the tables if they don't exist
 init_db()
 
-# Number of documents returned by a natural language query
-MAX_SEARCH_RESULTS = 5
-
 
 def to_iso(value):
     """Convert a database timestamp to an ISO 8601 string for JSON (None if missing)."""
@@ -224,25 +221,6 @@ def to_iso(value):
 def clean_text(text):
     """Remove NUL characters (found in some PDFs), which PostgreSQL text columns cannot store."""
     return text.replace('\x00', '')
-
-
-def build_chunks(content):
-    """Split a document into chunks and create an embedding for each (runs locally)."""
-    chunks = split_into_chunks(content)
-    vectors = embed(chunks) if chunks else []
-    return [(i, chunk, to_pgvector(vector)) for i, (chunk, vector) in enumerate(zip(chunks, vectors))]
-
-
-def save_chunks(conn, doc_id, chunks):
-    """Replace a document's chunks in the document_chunks table."""
-    conn.execute("DELETE FROM document_chunks WHERE document_id = %s", (doc_id,))
-    conn.cursor().executemany(
-        """
-        INSERT INTO document_chunks (document_id, chunk_index, content, embedding)
-        VALUES (%s, %s, %s, %s::vector)
-        """,
-        [(doc_id, index, chunk, vector) for index, chunk, vector in chunks]
-    )
 
 
 # ========================================
@@ -652,58 +630,25 @@ def search():
 @app.route('/query', methods=['GET'])
 def query_documents():
     """
-    Find the documents that best match a plain-English question (semantic search).
+    Find the documents that best match a plain-English question.
     
-    The question is turned into an embedding with the same local model used for the
-    documents, and pgvector finds the chunks with the closest meaning (cosine distance).
+    Uses hybrid search (see search.py): semantic search with the local embedding model
+    and pgvector, combined with PostgreSQL keyword search. Weak matches are left out.
     
     Query parameters:
         - q: The question, e.g. "how do I give feedback to users?"
+        - category: (optional) only search documents in this category
         
     Returns:
         JSON response with the top matching documents, best first
     """
     question = request.args.get('q', '').strip()
+    category = request.args.get('category', '').strip()
     if not question:
         return jsonify({"status": "error", "message": "Please enter a question."}), 400
     
     try:
-        query_vector = to_pgvector(embed([question])[0])
-        
-        with pool.connection() as conn:
-            # Let the HNSW index return more candidates than its default of 40,
-            # so one long document can't crowd out every other match.
-            conn.execute("SET LOCAL hnsw.ef_search = 200")
-            rows = conn.execute(
-                """
-                SELECT d.id, d.name, d.category, d.source, c.content AS snippet,
-                       1 - (c.embedding <=> %s::vector) AS similarity
-                FROM document_chunks c
-                JOIN documents d ON d.id = c.document_id
-                ORDER BY c.embedding <=> %s::vector
-                LIMIT 200
-                """,
-                (query_vector, query_vector)
-            ).fetchall()
-        
-        # Keep only the best-matching chunk for each document
-        results = []
-        seen_ids = set()
-        for row in rows:
-            if row['id'] in seen_ids:
-                continue
-            seen_ids.add(row['id'])
-            results.append({
-                "id": row['id'],
-                "name": row['name'],
-                "category": row['category'],
-                "source": row['source'],
-                "snippet": row['snippet'],
-                "similarity": round(row['similarity'], 3)
-            })
-            if len(results) == MAX_SEARCH_RESULTS:
-                break
-        
+        results = search_documents(question, category=category or None)
         return jsonify({"status": "success", "question": question, "results": results})
     except Exception as e:
         return jsonify({"status": "error", "message": str(e)}), 500
