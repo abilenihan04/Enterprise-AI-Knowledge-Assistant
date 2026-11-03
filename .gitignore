@@ -1,0 +1,16 @@
+# Python
+__pycache__/
+*.py[cod]
+venv/
+.venv/
+env/
+.env
+
+# ChromaDB vector index folders (rebuilt automatically from chroma.sqlite3)
+chroma_data_v2/*/
+
+# OS / editor
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
