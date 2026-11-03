@@ -9,6 +9,11 @@
     .result-meta { font-size: 13px; color: #666; margin-bottom: 8px; }
     .match { background-color: #e7f1fb; color: #0078D4; padding: 2px 8px; border-radius: 10px; font-size: 12px; }
     .snippet { font-size: 14px; color: #333; white-space: pre-wrap; }
+    .answer { background-color: #f4f8fc; border-left: 4px solid #0078D4; border-radius: 4px; padding: 12px; margin-bottom: 16px; }
+    .answer h3 { margin: 0 0 8px 0; font-size: 16px; }
+    .answer-text { font-size: 15px; white-space: pre-wrap; }
+    .answer-sources { font-size: 13px; color: #666; margin-top: 8px; }
+    .answer-note { font-size: 12px; color: #888; margin-top: 6px; }
     .keyword { background-color: #eef7ee; color: #2e7d32; padding: 2px 8px; border-radius: 10px; font-size: 12px; margin-left: 4px; }
 </style>
 {% endblock %}
@@ -26,6 +31,7 @@
     </form>
     
     <p id="searchStatus" style="font-size: 14px;"></p>
+    <div id="answer"></div>
     <div id="results"></div>
 {% endblock %}
 
@@ -53,6 +59,9 @@
         const category = document.getElementById('categoryFilter').value;
         const status = document.getElementById('searchStatus');
         const resultsDiv = document.getElementById('results');
+        const answerDiv = document.getElementById('answer');
+        const thisSearch = ++latestSearch;
+        answerDiv.innerHTML = '';
         
         if (!question) {
             resultsDiv.innerHTML = '';
@@ -85,10 +94,52 @@
                 }
                 status.textContent = `Top ${data.results.length} matching documents:`;
                 data.results.forEach(result => resultsDiv.appendChild(renderResult(result)));
+                loadAnswer(url.replace('/query', '/answer'), thisSearch);
             })
             .catch(error => {
                 status.textContent = 'Error searching: ' + error;
                 status.className = 'error';
+            });
+    }
+    
+    // ========================================
+    // Ask the local language model for a written answer (slower, so it loads after the results)
+    // ========================================
+    let latestSearch = 0;
+    
+    function loadAnswer(url, thisSearch) {
+        const answerDiv = document.getElementById('answer');
+        const box = document.createElement('div');
+        box.className = 'answer';
+        const heading = document.createElement('h3');
+        heading.textContent = 'Answer';
+        const text = document.createElement('div');
+        text.className = 'answer-text';
+        text.textContent = 'Writing an answer from these documents... this can take up to a minute.';
+        box.append(heading, text);
+        answerDiv.appendChild(box);
+        
+        fetch(url)
+            .then(response => response.json())
+            .then(data => {
+                if (thisSearch !== latestSearch) return;  // a newer search has started
+                if (data.status !== 'success') {
+                    text.textContent = 'Could not write an answer: ' + data.message;
+                    return;
+                }
+                text.textContent = data.answer;
+                if (data.sources.length > 0) {
+                    const sources = document.createElement('div');
+                    sources.className = 'answer-sources';
+                    sources.textContent = 'Based on: ' + data.sources.map(source => source.name).join(', ');
+                    const note = document.createElement('div');
+                    note.className = 'answer-note';
+                    note.textContent = 'Written by an AI model running locally from the documents below. Check important details in the source document.';
+                    box.append(sources, note);
+                }
+            })
+            .catch(error => {
+                if (thisSearch === latestSearch) text.textContent = 'Could not write an answer: ' + error;
             });
     }
     

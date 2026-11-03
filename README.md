@@ -72,6 +72,24 @@ python load_sample_documents.py --remove
 no-answer questions correctly returning nothing, for semantic-only and hybrid search.
 `python evaluate_search.py --sweep` shows how the scores change with `MIN_SIMILARITY`.
 
+## Written answers (local language model)
+
+After the search results appear, the page asks `GET /answer?q=...&category=...` for a short
+written answer. `answers.py` gives the top 3 search passages to an open-source language model
+running locally in [Ollama](https://ollama.com). The model is told to answer only from those
+passages and to say if it couldn't find the answer. The passages closest in meaning to the answer are shown as its sources. No document
+text is sent to an external AI service.
+
+Set up Ollama once:
+
+1. Install Ollama from https://ollama.com/download (Windows, macOS or Linux).
+2. Download the model: `ollama pull qwen2.5:1.5b` (~1 GB, Apache 2.0 licence).
+3. Ollama runs in the background on `http://localhost:11434`. Change `OLLAMA_URL` / `OLLAMA_MODEL`
+   in `.env` to use a different server or model.
+
+On a laptop CPU an answer takes roughly 5-20 seconds; the first answer after starting is slower
+while the model loads. If Ollama isn't running, search still works and the answer box shows an error.
+
 ## Moving existing documents from ChromaDB
 
 The app previously stored documents in ChromaDB (`chroma_data_v2/`, an SQLite file). To copy
@@ -93,6 +111,7 @@ searchable. After checking the documents page, `chroma_data_v2/` can be deleted.
 - `schema.sql` – `documents` and `document_chunks` table definitions
 - `embeddings.py` – local embedding model and document chunking
 - `search.py` – saving chunks and hybrid search
+- `answers.py` – written answers from a local Ollama language model
 - `templates/` – HTML pages rendered by Flask
 - `embed_existing_documents.py` – creates embeddings for documents that don't have any
 - `migrate_chroma_to_postgres.py` – one-off copy of old ChromaDB documents into PostgreSQL

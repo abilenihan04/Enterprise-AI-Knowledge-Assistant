@@ -23,6 +23,7 @@ import io
 
 from db import pool, init_db
 from search import build_chunks, save_chunks, search_documents
+from answers import generate_answer, AnswerUnavailable
 
 # ========================================
 # FILE EXTRACTION FUNCTIONS
@@ -650,6 +651,40 @@ def query_documents():
     try:
         results = search_documents(question, category=category or None)
         return jsonify({"status": "success", "question": question, "results": results})
+    except Exception as e:
+        return jsonify({"status": "error", "message": str(e)}), 500
+
+
+# ========================================
+# ROUTE: WRITTEN ANSWER
+# ========================================
+
+@app.route('/answer', methods=['GET'])
+def answer_question():
+    """
+    Write a short answer to a plain-English question from the most relevant documents.
+    
+    Runs the same search as /query, then a local language model (Ollama, see answers.py)
+    writes an answer using only the top passages, citing them as [1], [2], ...
+    
+    Query parameters:
+        - q: The question
+        - category: (optional) only use documents in this category
+        
+    Returns:
+        JSON response with the answer and the source documents it was based on
+    """
+    question = request.args.get('q', '').strip()
+    category = request.args.get('category', '').strip()
+    if not question:
+        return jsonify({"status": "error", "message": "Please enter a question."}), 400
+    
+    try:
+        results = search_documents(question, category=category or None)
+        answer = generate_answer(question, results)
+        return jsonify({"status": "success", "question": question, **answer})
+    except AnswerUnavailable as e:
+        return jsonify({"status": "error", "message": str(e)}), 503
     except Exception as e:
         return jsonify({"status": "error", "message": str(e)}), 500
 
