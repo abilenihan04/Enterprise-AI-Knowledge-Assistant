@@ -1,0 +1,98 @@
+{% extends "base.html" %}
+
+{% block title %}Ask a Question - Enterprise AI Knowledge Assistant{% endblock %}
+
+{% block extra_head %}
+<style>
+    .result { border: 1px solid #ddd; border-radius: 8px; padding: 12px; margin-bottom: 12px; }
+    .result h4 { margin: 0 0 6px 0; }
+    .result-meta { font-size: 13px; color: #666; margin-bottom: 8px; }
+    .match { background-color: #e7f1fb; color: #0078D4; padding: 2px 8px; border-radius: 10px; font-size: 12px; }
+    .snippet { font-size: 14px; color: #333; white-space: pre-wrap; }
+</style>
+{% endblock %}
+
+{% block content %}
+    <h2>Ask a Question</h2>
+    <p style="font-size: 14px; color: #666;">Ask in plain English - you don't need to know document titles or exact keywords.</p>
+    
+    <form id="searchForm" onsubmit="runSearch(); return false;">
+        <input type="text" id="question" placeholder="e.g. How should a system give feedback to users?">
+        <button type="submit">Search</button>
+    </form>
+    
+    <p id="searchStatus" style="font-size: 14px;"></p>
+    <div id="results"></div>
+{% endblock %}
+
+{% block scripts %}
+    // ========================================
+    // Send the question to the backend and show the best matches
+    // ========================================
+    function runSearch() {
+        const question = document.getElementById('question').value.trim();
+        const status = document.getElementById('searchStatus');
+        const resultsDiv = document.getElementById('results');
+        
+        if (!question) {
+            status.textContent = 'Please enter a question.';
+            status.className = 'error';
+            return;
+        }
+        
+        status.textContent = 'Searching...';
+        status.className = '';
+        resultsDiv.innerHTML = '';
+        
+        fetch('/query?q=' + encodeURIComponent(question))
+            .then(response => response.json())
+            .then(data => {
+                if (data.status !== 'success') {
+                    status.textContent = 'Error: ' + data.message;
+                    status.className = 'error';
+                    return;
+                }
+                if (data.results.length === 0) {
+                    status.textContent = 'No documents found. Add some documents first.';
+                    return;
+                }
+                status.textContent = `Top ${data.results.length} matching documents:`;
+                data.results.forEach(result => resultsDiv.appendChild(renderResult(result)));
+            })
+            .catch(error => {
+                status.textContent = 'Error searching: ' + error;
+                status.className = 'error';
+            });
+    }
+    
+    // ========================================
+    // Build one result card (textContent is used so document text is never run as HTML)
+    // ========================================
+    function renderResult(result) {
+        const card = document.createElement('div');
+        card.className = 'result';
+        
+        const title = document.createElement('h4');
+        title.textContent = result.name + ' ';
+        const match = document.createElement('span');
+        match.className = 'match';
+        match.textContent = Math.round(result.similarity * 100) + '% match';
+        title.appendChild(match);
+        
+        const meta = document.createElement('div');
+        meta.className = 'result-meta';
+        meta.textContent = `Category: ${result.category} | Source: ${result.source}`;
+        
+        const snippet = document.createElement('div');
+        snippet.className = 'snippet';
+        snippet.textContent = result.snippet.length > 400 ? result.snippet.substring(0, 400) + '...' : result.snippet;
+        
+        const download = document.createElement('button');
+        download.className = 'download-btn';
+        download.textContent = 'Download';
+        download.onclick = () => { window.location.href = `/download/${result.id}`; };
+        
+        card.append(title, meta, snippet, download);
+        return card;
+    }
+{% endblock %}

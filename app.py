@@ -22,6 +22,7 @@ from bs4 import BeautifulSoup
 import io
 
 from db import pool, init_db
+from embeddings import split_into_chunks, embed, to_pgvector
 
 # ========================================
 # FILE EXTRACTION FUNCTIONS
@@ -208,8 +209,11 @@ FILE_EXTRACTORS = {
 # Initialize Flask app with template folder configuration
 app = Flask(__name__, template_folder='templates')
 
-# Connect to PostgreSQL and create the documents table if it doesn't exist
+# Connect to PostgreSQL and create the tables if they don't exist
 init_db()
+
+# Number of documents returned by a natural language query
+MAX_SEARCH_RESULTS = 5
 
 
 def to_iso(value):
@@ -220,6 +224,25 @@ def to_iso(value):
 def clean_text(text):
     """Remove NUL characters (found in some PDFs), which PostgreSQL text columns cannot store."""
     return text.replace('\x00', '')
+
+
+def build_chunks(content):
+    """Split a document into chunks and create an embedding for each (runs locally)."""
+    chunks = split_into_chunks(content)
+    vectors = embed(chunks) if chunks else []
+    return [(i, chunk, to_pgvector(vector)) for i, (chunk, vector) in enumerate(zip(chunks, vectors))]
+
+
+def save_chunks(conn, doc_id, chunks):
+    """Replace a document's chunks in the document_chunks table."""
+    conn.execute("DELETE FROM document_chunks WHERE document_id = %s", (doc_id,))
+    conn.cursor().executemany(
+        """
+        INSERT INTO document_chunks (document_id, chunk_index, content, embedding)
+        VALUES (%s, %s, %s, %s::vector)
+        """,
+        [(doc_id, index, chunk, vector) for index, chunk, vector in chunks]
+    )
 
 
 # ========================================
@@ -337,11 +360,12 @@ def insert_document():
         return jsonify({"status": "error", "message": "Please provide either text or a file."}), 400
     
     content_to_store = clean_text(content_to_store)
+    chunks = build_chunks(content_to_store)
     
     # Generate unique document ID
     doc_id = f"doc_{uuid.uuid4().hex[:6]}"
     
-    # Insert document into PostgreSQL (created_at defaults to now())
+    # Insert document and its chunks into PostgreSQL in one transaction (created_at defaults to now())
     try:
         with pool.connection() as conn:
             conn.execute(
@@ -351,6 +375,7 @@ def insert_document():
                 """,
                 (doc_id, document_name, document_category, "Internal", source, content_to_store)
             )
+            save_chunks(conn, doc_id, chunks)
     except UniqueViolation:
         return jsonify({
             "status": "error",
@@ -535,6 +560,7 @@ def update_document(doc_id):
             return jsonify({"status": "error", "message": "Category is required."}), 400
         
         new_content = clean_text(new_content)
+        chunks = build_chunks(new_content)
         
         # Update the row. The name only changes if a new one is provided (COALESCE keeps the old one).
         try:
@@ -551,6 +577,8 @@ def update_document(doc_id):
                     """,
                     (new_content, new_category, new_name or None, doc_id)
                 ).fetchone()
+                if updated:
+                    save_chunks(conn, doc_id, chunks)
         except UniqueViolation:
             return jsonify({
                 "status": "error",
@@ -603,6 +631,85 @@ def delete_document(doc_id):
 
 
 # ========================================
+# ROUTE: SEARCH PAGE
+# ========================================
+
+@app.route('/search', methods=['GET'])
+def search():
+    """
+    Serve the search page (ask a question in plain English).
+    
+    Returns:
+        str: Rendered HTML template
+    """
+    return render_template('search.html')
+
+
+# ========================================
+# ROUTE: NATURAL LANGUAGE QUERY
+# ========================================
+
+@app.route('/query', methods=['GET'])
+def query_documents():
+    """
+    Find the documents that best match a plain-English question (semantic search).
+    
+    The question is turned into an embedding with the same local model used for the
+    documents, and pgvector finds the chunks with the closest meaning (cosine distance).
+    
+    Query parameters:
+        - q: The question, e.g. "how do I give feedback to users?"
+        
+    Returns:
+        JSON response with the top matching documents, best first
+    """
+    question = request.args.get('q', '').strip()
+    if not question:
+        return jsonify({"status": "error", "message": "Please enter a question."}), 400
+    
+    try:
+        query_vector = to_pgvector(embed([question])[0])
+        
+        with pool.connection() as conn:
+            # Let the HNSW index return more candidates than its default of 40,
+            # so one long document can't crowd out every other match.
+            conn.execute("SET LOCAL hnsw.ef_search = 200")
+            rows = conn.execute(
+                """
+                SELECT d.id, d.name, d.category, d.source, c.content AS snippet,
+                       1 - (c.embedding <=> %s::vector) AS similarity
+                FROM document_chunks c
+                JOIN documents d ON d.id = c.document_id
+                ORDER BY c.embedding <=> %s::vector
+                LIMIT 200
+                """,
+                (query_vector, query_vector)
+            ).fetchall()
+        
+        # Keep only the best-matching chunk for each document
+        results = []
+        seen_ids = set()
+        for row in rows:
+            if row['id'] in seen_ids:
+                continue
+            seen_ids.add(row['id'])
+            results.append({
+                "id": row['id'],
+                "name": row['name'],
+                "category": row['category'],
+                "source": row['source'],
+                "snippet": row['snippet'],
+                "similarity": round(row['similarity'], 3)
+            })
+            if len(results) == MAX_SEARCH_RESULTS:
+                break
+        
+        return jsonify({"status": "success", "question": question, "results": results})
+    except Exception as e:
+        return jsonify({"status": "error", "message": str(e)}), 500
+
+
+# ========================================
 # ROUTE: DEBUG DATABASE
 # ========================================
 
@@ -620,7 +727,8 @@ def debug_database():
                 """
                 SELECT id, name, category, source, created_at, updated_at,
                        LEFT(content, 100) AS content_preview,
-                       LENGTH(content) AS content_length
+                       LENGTH(content) AS content_length,
+                       (SELECT COUNT(*) FROM document_chunks c WHERE c.document_id = documents.id) AS chunk_count
                 FROM documents
                 ORDER BY created_at NULLS FIRST, id
                 """
@@ -634,7 +742,8 @@ def debug_database():
             "created_at": to_iso(row['created_at']),
             "updated_at": to_iso(row['updated_at']),
             "content_preview": row['content_preview'],
-            "content_length": row['content_length']
+            "content_length": row['content_length'],
+            "chunk_count": row['chunk_count']
         } for row in rows]
         
         debug_info = {
