@@ -55,6 +55,7 @@
         const resultsDiv = document.getElementById('results');
         
         if (!question) {
+            resultsDiv.innerHTML = '';
             status.textContent = 'Please enter a question.';
             status.className = 'error';
             return;
