@@ -87,7 +87,7 @@ Set up Ollama once:
 3. Ollama runs in the background on `http://localhost:11434`. Change `OLLAMA_URL` / `OLLAMA_MODEL`
    in `.env` to use a different server or model.
 
-On a laptop CPU an answer takes roughly 5-20 seconds; the first answer after starting is slower
+On a CPU an answer takes roughly 10-45 seconds; the first answer after starting is slower
 while the model loads. If Ollama isn't running, search still works and the answer box shows an error.
 
 ## Moving existing documents from ChromaDB
