@@ -1,6 +1,8 @@
 <!DOCTYPE html>
-<html>
+<html lang="en">
 <head>
+    <meta charset="utf-8">
+    <meta name="google" content="notranslate">
     <title>View Documents - Enterprise AI Knowledge Assistant</title>
     <style>
         body { font-family: Arial, sans-serif; margin: 0; background-color: #f9f9f9; }
@@ -68,6 +70,8 @@
     </div>
 
     <script>
+    // All documents from the last /list call, kept so the filter bar can filter in the browser
+    // without asking the server again
     let allDocuments = [];
     
     // Load documents on page load
@@ -209,7 +213,7 @@
         document.getElementById('updateContent').value = '';
         document.getElementById('updateModal').style.display = 'block';
         
-        // Fetch current document data
+        // Fetch current document data (fresh from the server, in case it changed since the page loaded)
         fetch('/list')
             .then(response => response.json())
             .then(data => {

@@ -2,7 +2,8 @@
 Enterprise AI Knowledge Assistant - Backend Application
 =====================================================
 A Flask-based REST API for managing documents stored in a PostgreSQL database.
-Supports CRUD operations, file uploads, and text extraction from multiple file formats.
+Supports CRUD operations, file uploads, and text extraction from multiple file formats,
+plus natural language search (search.py) and AI-written answers (answers.py).
 
 Author: Abigail Lenihan
 Final Year Project - University College Cork
@@ -21,6 +22,7 @@ import openpyxl
 from bs4 import BeautifulSoup
 import io
 
+# Project modules: database connection, search/indexing, and answer generation
 from db import pool, init_db
 from search import build_chunks, save_chunks, search_documents
 from answers import generate_answer, AnswerUnavailable
@@ -39,6 +41,7 @@ def extract_text_from_pdf(file_content):
     Returns:
         str: Extracted text from all pages
     """
+    # io.BytesIO lets the library read the uploaded bytes as if they were a file on disk
     pdf_reader = PyPDF2.PdfReader(io.BytesIO(file_content))
     text = ""
     for page in pdf_reader.pages:
@@ -77,6 +80,7 @@ def extract_text_from_pptx(file_content):
     text = ""
     for slide in prs.slides:
         for shape in slide.shapes:
+            # Only some shapes (text boxes, titles) contain text; pictures etc. are skipped
             if hasattr(shape, "text"):
                 text += shape.text + "\n"
     return text
@@ -96,6 +100,7 @@ def extract_text_from_xlsx(file_content):
     text = ""
     for sheet in workbook:
         for row in sheet.iter_rows(values_only=True):
+            # Join the cells of each row with spaces; empty cells become empty strings
             row_text = " ".join([str(cell) if cell is not None else "" for cell in row])
             if row_text.strip():
                 text += row_text + "\n"
@@ -127,6 +132,7 @@ def extract_text_from_epub(file_content):
         str: Extracted text from all chapters
     """
     try:
+        import ebooklib
         from ebooklib import epub
         from bs4 import BeautifulSoup
         import zipfile
@@ -186,7 +192,9 @@ def extract_text_from_epub(file_content):
 # FILE TYPE EXTRACTORS CONFIGURATION
 # ========================================
 
-# Define supported file types and their extraction functions
+# Define supported file types and their extraction functions.
+# Each maps a file extension to a function that takes the raw file bytes and returns text.
+# Plain text formats just need decoding; the rest use the extractors above.
 FILE_EXTRACTORS = {
     '.txt': lambda x: x.decode('utf-8'),
     '.csv': lambda x: x.decode('utf-8'),
@@ -339,6 +347,8 @@ def insert_document():
         return jsonify({"status": "error", "message": "Please provide either text or a file."}), 400
     
     content_to_store = clean_text(content_to_store)
+    # Split the text into chunks and embed them for search. This is done before opening the
+    # database transaction, so the slow model work doesn't hold a connection open.
     chunks = build_chunks(content_to_store)
     
     # Generate unique document ID
@@ -356,6 +366,8 @@ def insert_document():
             )
             save_chunks(conn, doc_id, chunks)
     except UniqueViolation:
+        # Another request inserted the same name between the duplicate check and this insert;
+        # the UNIQUE constraint in schema.sql catches it
         return jsonify({
             "status": "error",
             "message": f"A document with the name '{document_name}' already exists."
@@ -539,6 +551,7 @@ def update_document(doc_id):
             return jsonify({"status": "error", "message": "Category is required."}), 400
         
         new_content = clean_text(new_content)
+        # Re-embed the new content so search reflects the updated text
         chunks = build_chunks(new_content)
         
         # Update the row. The name only changes if a new one is provided (COALESCE keeps the old one).
@@ -593,6 +606,8 @@ def delete_document(doc_id):
         JSON response with status and message
     """
     try:
+        # RETURNING id tells us whether a row was actually deleted (None = no such document).
+        # The document's chunks are removed automatically by ON DELETE CASCADE.
         with pool.connection() as conn:
             deleted = conn.execute(
                 "DELETE FROM documents WHERE id = %s RETURNING id", (doc_id,)
@@ -665,7 +680,8 @@ def answer_question():
     Write a short answer to a plain-English question from the most relevant documents.
     
     Runs the same search as /query, then a local language model (Ollama, see answers.py)
-    writes an answer using only the top passages, citing them as [1], [2], ...
+    writes an answer using only the top passages. The sources returned are the passages
+    closest in meaning to the answer, so the user can check it against the documents.
     
     Query parameters:
         - q: The question
@@ -684,6 +700,7 @@ def answer_question():
         answer = generate_answer(question, results)
         return jsonify({"status": "success", "question": question, **answer})
     except AnswerUnavailable as e:
+        # 503 = Service Unavailable: Ollama isn't running or the model isn't downloaded
         return jsonify({"status": "error", "message": str(e)}), 503
     except Exception as e:
         return jsonify({"status": "error", "message": str(e)}), 500

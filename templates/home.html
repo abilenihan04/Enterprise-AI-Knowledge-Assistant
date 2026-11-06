@@ -41,7 +41,8 @@
 {% endblock %}
 
 {% block scripts %}
-    // Initialize page on load
+    // ========================================
+    // Initialize page on load (fill the category suggestions)
     // ========================================
     window.onload = function() {
         loadCategories();
@@ -144,6 +145,8 @@
     // ========================================
     // Replace existing document
     // ========================================
+    // Called when the user confirms replacing a document with the same name: sends the new
+    // content to /update for the existing document instead of creating a new one
     function replaceDocument(docId, formData) {
         // For file uploads, we need to send as FormData
         const file = formData.get('document_file');

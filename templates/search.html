@@ -94,6 +94,7 @@
                 }
                 status.textContent = `Top ${data.results.length} matching documents:`;
                 data.results.forEach(result => resultsDiv.appendChild(renderResult(result)));
+                // Results are shown straight away; the AI answer (same question, /answer) follows
                 loadAnswer(url.replace('/query', '/answer'), thisSearch);
             })
             .catch(error => {
@@ -105,6 +106,8 @@
     // ========================================
     // Ask the local language model for a written answer (slower, so it loads after the results)
     // ========================================
+    // Counts searches so a slow answer from an earlier question is ignored if the user has
+    // already asked something new (otherwise the old answer could appear under the new results)
     let latestSearch = 0;
     
     function loadAnswer(url, thisSearch) {
@@ -152,10 +155,12 @@
         
         const title = document.createElement('h4');
         title.textContent = result.name + ' ';
+        // Similarity (0-1) from semantic search, shown as a percentage
         const match = document.createElement('span');
         match.className = 'match';
         match.textContent = Math.round(result.similarity * 100) + '% match';
         title.appendChild(match);
+        // Badge for results also found by keyword search
         if (result.all_keywords_match) {
             const keyword = document.createElement('span');
             keyword.className = 'keyword';

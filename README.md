@@ -57,15 +57,7 @@ that existed before search was added, run once:
 python embed_existing_documents.py
 ```
 
-### Sample documents and measuring search quality
-
-`sample_data/` contains synthetic HR, IT, finance, health and safety and facilities policies
-for a fictional company, used to test and demo search. Load or remove them with:
-
-```bash
-python load_sample_documents.py
-python load_sample_documents.py --remove
-```
+### Measuring search quality
 
 `evaluation/test_questions.json` lists test questions with the document that should be found
 (or none). `python evaluate_search.py` runs them and reports Top-1, Top-5, MRR and the share of
@@ -90,20 +82,6 @@ Set up Ollama once:
 On a CPU an answer takes roughly 10-45 seconds; the first answer after starting is slower
 while the model loads. If Ollama isn't running, search still works and the answer box shows an error.
 
-## Moving existing documents from ChromaDB
-
-The app previously stored documents in ChromaDB (`chroma_data_v2/`, an SQLite file). To copy
-them into PostgreSQL once:
-
-```bash
-pip install chromadb==1.5.9
-python migrate_chroma_to_postgres.py
-```
-
-Document names must be unique in PostgreSQL, so any duplicate names are renamed to
-`<name> (<id>)` and printed. Then run `python embed_existing_documents.py` so they are
-searchable. After checking the documents page, `chroma_data_v2/` can be deleted.
-
 ## Project structure
 
 - `app.py` – Flask backend (routes)
@@ -114,7 +92,5 @@ searchable. After checking the documents page, `chroma_data_v2/` can be deleted.
 - `answers.py` – written answers from a local Ollama language model
 - `templates/` – HTML pages rendered by Flask
 - `embed_existing_documents.py` – creates embeddings for documents that don't have any
-- `migrate_chroma_to_postgres.py` – one-off copy of old ChromaDB documents into PostgreSQL
-- `load_sample_documents.py`, `sample_data/` – synthetic enterprise documents for testing
 - `evaluate_search.py`, `evaluation/` – test questions and search quality measurement
 - `docker-compose.yml` – local PostgreSQL for development
