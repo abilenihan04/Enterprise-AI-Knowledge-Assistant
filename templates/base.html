@@ -1,6 +1,13 @@
 <!DOCTYPE html>
-<html>
+<!--
+    Shared layout for home.html and search.html: navbar, styles and page container.
+    Child pages fill in the Jinja blocks: title, extra_head, content and scripts.
+-->
+<html lang="en">
 <head>
+    <meta charset="utf-8">
+    <!-- Stops Chrome offering to translate the page (it misdetects some extracted PDF text) -->
+    <meta name="google" content="notranslate">
     <title>{% block title %}Enterprise AI Knowledge Assistant{% endblock %}</title>
     <style>
         /* Global styles */
@@ -54,6 +61,7 @@
         <div class="navbar-nav">
             <a href="/">Home</a>
             <a href="/documents">View Documents</a>
+            <a href="/search">Ask a Question</a>
             <a href="/debug">Debug</a>
         </div>
     </div>

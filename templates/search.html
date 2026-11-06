@@ -1,0 +1,187 @@
+{% extends "base.html" %}
+
+{% block title %}Ask a Question - Enterprise AI Knowledge Assistant{% endblock %}
+
+{% block extra_head %}
+<style>
+    .result { border: 1px solid #ddd; border-radius: 8px; padding: 12px; margin-bottom: 12px; }
+    .result h4 { margin: 0 0 6px 0; }
+    .result-meta { font-size: 13px; color: #666; margin-bottom: 8px; }
+    .match { background-color: #e7f1fb; color: #0078D4; padding: 2px 8px; border-radius: 10px; font-size: 12px; }
+    .snippet { font-size: 14px; color: #333; white-space: pre-wrap; }
+    .answer { background-color: #f4f8fc; border-left: 4px solid #0078D4; border-radius: 4px; padding: 12px; margin-bottom: 16px; }
+    .answer h3 { margin: 0 0 8px 0; font-size: 16px; }
+    .answer-text { font-size: 15px; white-space: pre-wrap; }
+    .answer-sources { font-size: 13px; color: #666; margin-top: 8px; }
+    .answer-note { font-size: 12px; color: #888; margin-top: 6px; }
+    .keyword { background-color: #eef7ee; color: #2e7d32; padding: 2px 8px; border-radius: 10px; font-size: 12px; margin-left: 4px; }
+</style>
+{% endblock %}
+
+{% block content %}
+    <h2>Ask a Question</h2>
+    <p style="font-size: 14px; color: #666;">Ask in plain English - you don't need to know document titles or exact keywords.</p>
+    
+    <form id="searchForm" onsubmit="runSearch(); return false;">
+        <input type="text" id="question" placeholder="e.g. How should a system give feedback to users?">
+        <select id="categoryFilter">
+            <option value="">All categories</option>
+        </select>
+        <button type="submit">Search</button>
+    </form>
+    
+    <p id="searchStatus" style="font-size: 14px;"></p>
+    <div id="answer"></div>
+    <div id="results"></div>
+{% endblock %}
+
+{% block scripts %}
+    // ========================================
+    // Fill the category filter from the categories in the knowledge base
+    // ========================================
+    fetch('/categories')
+        .then(response => response.json())
+        .then(data => {
+            const select = document.getElementById('categoryFilter');
+            (data.categories || []).forEach(category => {
+                const option = document.createElement('option');
+                option.value = category;
+                option.textContent = category;
+                select.appendChild(option);
+            });
+        });
+    
+    // ========================================
+    // Send the question to the backend and show the best matches
+    // ========================================
+    function runSearch() {
+        const question = document.getElementById('question').value.trim();
+        const category = document.getElementById('categoryFilter').value;
+        const status = document.getElementById('searchStatus');
+        const resultsDiv = document.getElementById('results');
+        const answerDiv = document.getElementById('answer');
+        const thisSearch = ++latestSearch;
+        answerDiv.innerHTML = '';
+        
+        if (!question) {
+            resultsDiv.innerHTML = '';
+            status.textContent = 'Please enter a question.';
+            status.className = 'error';
+            return;
+        }
+        
+        status.textContent = 'Searching...';
+        status.className = '';
+        resultsDiv.innerHTML = '';
+        
+        let url = '/query?q=' + encodeURIComponent(question);
+        if (category) {
+            url += '&category=' + encodeURIComponent(category);
+        }
+        
+        fetch(url)
+            .then(response => response.json())
+            .then(data => {
+                if (data.status !== 'success') {
+                    status.textContent = 'Error: ' + data.message;
+                    status.className = 'error';
+                    return;
+                }
+                if (data.results.length === 0) {
+                    status.textContent = 'No documents closely match your question. Try rewording it'
+                        + (category ? ' or searching all categories.' : '.');
+                    return;
+                }
+                status.textContent = `Top ${data.results.length} matching documents:`;
+                data.results.forEach(result => resultsDiv.appendChild(renderResult(result)));
+                // Results are shown straight away; the AI answer (same question, /answer) follows
+                loadAnswer(url.replace('/query', '/answer'), thisSearch);
+            })
+            .catch(error => {
+                status.textContent = 'Error searching: ' + error;
+                status.className = 'error';
+            });
+    }
+    
+    // ========================================
+    // Ask the local language model for a written answer (slower, so it loads after the results)
+    // ========================================
+    // Counts searches so a slow answer from an earlier question is ignored if the user has
+    // already asked something new (otherwise the old answer could appear under the new results)
+    let latestSearch = 0;
+    
+    function loadAnswer(url, thisSearch) {
+        const answerDiv = document.getElementById('answer');
+        const box = document.createElement('div');
+        box.className = 'answer';
+        const heading = document.createElement('h3');
+        heading.textContent = 'Answer';
+        const text = document.createElement('div');
+        text.className = 'answer-text';
+        text.textContent = 'Writing an answer from these documents... this can take up to a minute.';
+        box.append(heading, text);
+        answerDiv.appendChild(box);
+        
+        fetch(url)
+            .then(response => response.json())
+            .then(data => {
+                if (thisSearch !== latestSearch) return;  // a newer search has started
+                if (data.status !== 'success') {
+                    text.textContent = 'Could not write an answer: ' + data.message;
+                    return;
+                }
+                text.textContent = data.answer;
+                if (data.sources.length > 0) {
+                    const sources = document.createElement('div');
+                    sources.className = 'answer-sources';
+                    sources.textContent = 'Based on: ' + data.sources.map(source => source.name).join(', ');
+                    const note = document.createElement('div');
+                    note.className = 'answer-note';
+                    note.textContent = 'Written by an AI model running locally from the documents below. Check important details in the source document.';
+                    box.append(sources, note);
+                }
+            })
+            .catch(error => {
+                if (thisSearch === latestSearch) text.textContent = 'Could not write an answer: ' + error;
+            });
+    }
+    
+    // ========================================
+    // Build one result card (textContent is used so document text is never run as HTML)
+    // ========================================
+    function renderResult(result) {
+        const card = document.createElement('div');
+        card.className = 'result';
+        
+        const title = document.createElement('h4');
+        title.textContent = result.name + ' ';
+        // Similarity (0-1) from semantic search, shown as a percentage
+        const match = document.createElement('span');
+        match.className = 'match';
+        match.textContent = Math.round(result.similarity * 100) + '% match';
+        title.appendChild(match);
+        // Badge for results also found by keyword search
+        if (result.all_keywords_match) {
+            const keyword = document.createElement('span');
+            keyword.className = 'keyword';
+            keyword.textContent = 'contains all your keywords';
+            title.appendChild(keyword);
+        }
+        
+        const meta = document.createElement('div');
+        meta.className = 'result-meta';
+        meta.textContent = `Category: ${result.category} | Source: ${result.source}`;
+        
+        const snippet = document.createElement('div');
+        snippet.className = 'snippet';
+        snippet.textContent = result.snippet.length > 400 ? result.snippet.substring(0, 400) + '...' : result.snippet;
+        
+        const download = document.createElement('button');
+        download.className = 'download-btn';
+        download.textContent = 'Download';
+        download.onclick = () => { window.location.href = `/download/${result.id}`; };
+        
+        card.append(title, meta, snippet, download);
+        return card;
+    }
+{% endblock %}

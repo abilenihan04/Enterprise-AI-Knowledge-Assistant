@@ -1,8 +1,9 @@
 """
 Enterprise AI Knowledge Assistant - Backend Application
 =====================================================
-A Flask-based REST API for managing documents in a ChromaDB vector database.
-Supports CRUD operations, file uploads, and text extraction from multiple file formats.
+A Flask-based REST API for managing documents stored in a PostgreSQL database.
+Supports CRUD operations, file uploads, and text extraction from multiple file formats,
+plus natural language search (search.py) and AI-written answers (answers.py).
 
 Author: Abigail Lenihan
 Final Year Project - University College Cork
@@ -12,7 +13,7 @@ Final Year Project - University College Cork
 # IMPORTS
 # ========================================
 from flask import Flask, jsonify, request, render_template, Response
-import chromadb
+from psycopg.errors import UniqueViolation
 import uuid
 import PyPDF2
 from docx import Document
@@ -20,7 +21,11 @@ from pptx import Presentation
 import openpyxl
 from bs4 import BeautifulSoup
 import io
-from datetime import datetime
+
+# Project modules: database connection, search/indexing, and answer generation
+from db import pool, init_db
+from search import build_chunks, save_chunks, search_documents
+from answers import generate_answer, AnswerUnavailable
 
 # ========================================
 # FILE EXTRACTION FUNCTIONS
@@ -36,6 +41,7 @@ def extract_text_from_pdf(file_content):
     Returns:
         str: Extracted text from all pages
     """
+    # io.BytesIO lets the library read the uploaded bytes as if they were a file on disk
     pdf_reader = PyPDF2.PdfReader(io.BytesIO(file_content))
     text = ""
     for page in pdf_reader.pages:
@@ -74,6 +80,7 @@ def extract_text_from_pptx(file_content):
     text = ""
     for slide in prs.slides:
         for shape in slide.shapes:
+            # Only some shapes (text boxes, titles) contain text; pictures etc. are skipped
             if hasattr(shape, "text"):
                 text += shape.text + "\n"
     return text
@@ -93,6 +100,7 @@ def extract_text_from_xlsx(file_content):
     text = ""
     for sheet in workbook:
         for row in sheet.iter_rows(values_only=True):
+            # Join the cells of each row with spaces; empty cells become empty strings
             row_text = " ".join([str(cell) if cell is not None else "" for cell in row])
             if row_text.strip():
                 text += row_text + "\n"
@@ -124,6 +132,7 @@ def extract_text_from_epub(file_content):
         str: Extracted text from all chapters
     """
     try:
+        import ebooklib
         from ebooklib import epub
         from bs4 import BeautifulSoup
         import zipfile
@@ -183,7 +192,9 @@ def extract_text_from_epub(file_content):
 # FILE TYPE EXTRACTORS CONFIGURATION
 # ========================================
 
-# Define supported file types and their extraction functions
+# Define supported file types and their extraction functions.
+# Each maps a file extension to a function that takes the raw file bytes and returns text.
+# Plain text formats just need decoding; the rest use the extractors above.
 FILE_EXTRACTORS = {
     '.txt': lambda x: x.decode('utf-8'),
     '.csv': lambda x: x.decode('utf-8'),
@@ -207,16 +218,18 @@ FILE_EXTRACTORS = {
 # Initialize Flask app with template folder configuration
 app = Flask(__name__, template_folder='templates')
 
-# Initialize ChromaDB persistent client
-# Using a separate folder to avoid cache issues
-chroma_client = chromadb.PersistentClient(path="./chroma_data_v2")
+# Connect to PostgreSQL and create the tables if they don't exist
+init_db()
 
-# Create or get the collection with no embedding function
-# Note: embedding_function=None prevents ChromaDB from downloading models
-collection = chroma_client.get_or_create_collection(
-    name="synthetic_docs_v2",
-    embedding_function=None
-)
+
+def to_iso(value):
+    """Convert a database timestamp to an ISO 8601 string for JSON (None if missing)."""
+    return value.isoformat() if value else None
+
+
+def clean_text(text):
+    """Remove NUL characters (found in some PDFs), which PostgreSQL text columns cannot store."""
+    return text.replace('\x00', '')
 
 
 # ========================================
@@ -292,15 +305,16 @@ def insert_document():
         return jsonify({"status": "error", "message": "Category is required."}), 400
     
     # Check for duplicate document name
-    existing_docs = collection.get()
-    if existing_docs['metadatas']:
-        for metadata in existing_docs['metadatas']:
-            if metadata.get('name') == document_name:
-                return jsonify({
-                    "status": "duplicate",
-                    "message": f"A document with the name '{document_name}' already exists.",
-                    "existing_id": existing_docs['ids'][existing_docs['metadatas'].index(metadata)]
-                }), 409
+    with pool.connection() as conn:
+        existing = conn.execute(
+            "SELECT id FROM documents WHERE name = %s", (document_name,)
+        ).fetchone()
+    if existing:
+        return jsonify({
+            "status": "duplicate",
+            "message": f"A document with the name '{document_name}' already exists.",
+            "existing_id": existing['id']
+        }), 409
     
     # Use the global file extractors configuration
     file_extractors = FILE_EXTRACTORS
@@ -319,15 +333,7 @@ def insert_document():
         # Extract text from file
         try:
             file_content = document_file.read()
-            extractor = file_extractors[file_ext]
-            
-            if file_ext in ['.txt', '.csv', '.json', '.md', '.log']:
-                # Text files - decode as UTF-8
-                content_to_store = extractor(file_content)
-            else:
-                # Binary files - pass bytes to extractor
-                content_to_store = extractor(file_content)
-            
+            content_to_store = file_extractors[file_ext](file_content)
             source = f"File: {document_file.filename}"
         except Exception as e:
             return jsonify({
@@ -340,25 +346,32 @@ def insert_document():
     else:
         return jsonify({"status": "error", "message": "Please provide either text or a file."}), 400
     
-    # Generate dummy embedding vector (prevents ChromaDB from downloading models)
-    dummy_vector = [[0.1] * 384]
+    content_to_store = clean_text(content_to_store)
+    # Split the text into chunks and embed them for search. This is done before opening the
+    # database transaction, so the slow model work doesn't hold a connection open.
+    chunks = build_chunks(content_to_store)
     
     # Generate unique document ID
     doc_id = f"doc_{uuid.uuid4().hex[:6]}"
     
-    # Insert document into ChromaDB
-    collection.upsert(
-        documents=[content_to_store],
-        embeddings=dummy_vector,
-        metadatas=[{
-            "name": document_name,
-            "category": document_category,
-            "confidentiality": "Internal",
-            "source": source,
-            "created_at": datetime.now().isoformat()
-        }],
-        ids=[doc_id]
-    )
+    # Insert document and its chunks into PostgreSQL in one transaction (created_at defaults to now())
+    try:
+        with pool.connection() as conn:
+            conn.execute(
+                """
+                INSERT INTO documents (id, name, category, confidentiality, source, content)
+                VALUES (%s, %s, %s, %s, %s, %s)
+                """,
+                (doc_id, document_name, document_category, "Internal", source, content_to_store)
+            )
+            save_chunks(conn, doc_id, chunks)
+    except UniqueViolation:
+        # Another request inserted the same name between the duplicate check and this insert;
+        # the UNIQUE constraint in schema.sql catches it
+        return jsonify({
+            "status": "error",
+            "message": f"A document with the name '{document_name}' already exists."
+        }), 409
     
     return jsonify({
         "status": "success", 
@@ -381,17 +394,14 @@ def get_categories():
         JSON response with sorted list of categories
     """
     try:
-        results = collection.get()
-        categories = set()
-        
-        if results['metadatas']:
-            for metadata in results['metadatas']:
-                if 'category' in metadata:
-                    categories.add(metadata['category'])
+        with pool.connection() as conn:
+            rows = conn.execute(
+                "SELECT DISTINCT category FROM documents ORDER BY category"
+            ).fetchall()
         
         return jsonify({
             "status": "success",
-            "categories": sorted(list(categories))
+            "categories": [row['category'] for row in rows]
         })
     except Exception as e:
         return jsonify({
@@ -413,23 +423,24 @@ def list_documents():
         JSON response with list of documents including metadata
     """
     try:
-        results = collection.get()
-        documents = []
+        with pool.connection() as conn:
+            rows = conn.execute(
+                """
+                SELECT id, name, source, category, content, created_at, updated_at
+                FROM documents
+                ORDER BY created_at NULLS FIRST, id
+                """
+            ).fetchall()
         
-        if results['documents']:
-            for i, doc in enumerate(results['documents']):
-                metadata = results['metadatas'][i] if results['metadatas'] and i < len(results['metadatas']) else {}
-                doc_id = results['ids'][i] if results['ids'] and i < len(results['ids']) else f"doc_{i}"
-                
-                documents.append({
-                    "id": doc_id,
-                    "content": doc,
-                    "name": metadata.get('name', 'Untitled'),
-                    "source": metadata.get('source', 'Unknown'),
-                    "category": metadata.get('category', 'Uncategorized'),
-                    "created_at": metadata.get('created_at'),
-                    "updated_at": metadata.get('updated_at')
-                })
+        documents = [{
+            "id": row['id'],
+            "content": row['content'],
+            "name": row['name'],
+            "source": row['source'],
+            "category": row['category'],
+            "created_at": to_iso(row['created_at']),
+            "updated_at": to_iso(row['updated_at'])
+        } for row in rows]
         
         return jsonify({
             "status": "success",
@@ -459,14 +470,15 @@ def download_document(doc_id):
         File download response with original filename (if available)
     """
     try:
-        results = collection.get(ids=[doc_id])
+        with pool.connection() as conn:
+            row = conn.execute(
+                "SELECT content, source FROM documents WHERE id = %s", (doc_id,)
+            ).fetchone()
         
-        if not results['documents'] or len(results['documents']) == 0:
+        if not row:
             return "Document not found", 404
         
-        document_content = results['documents'][0]
-        metadata = results['metadatas'][0] if results['metadatas'] and len(results['metadatas']) > 0 else {}
-        source = metadata.get('source', 'Unknown')
+        source = row['source']
         
         # Extract filename from source if it's a file
         if source.startswith('File:'):
@@ -475,7 +487,7 @@ def download_document(doc_id):
             filename = f"{doc_id}.txt"
         
         # Return as downloadable file
-        response = Response(document_content, mimetype='text/plain')
+        response = Response(row['content'], mimetype='text/plain')
         response.headers['Content-Disposition'] = f'attachment; filename="{filename}"'
         return response
         
@@ -538,29 +550,35 @@ def update_document(doc_id):
         if not new_category:
             return jsonify({"status": "error", "message": "Category is required."}), 400
         
-        # Check if document exists
-        existing = collection.get(ids=[doc_id])
-        if not existing['documents'] or len(existing['documents']) == 0:
+        new_content = clean_text(new_content)
+        # Re-embed the new content so search reflects the updated text
+        chunks = build_chunks(new_content)
+        
+        # Update the row. The name only changes if a new one is provided (COALESCE keeps the old one).
+        try:
+            with pool.connection() as conn:
+                updated = conn.execute(
+                    """
+                    UPDATE documents
+                    SET content = %s,
+                        category = %s,
+                        name = COALESCE(%s, name),
+                        updated_at = now()
+                    WHERE id = %s
+                    RETURNING id
+                    """,
+                    (new_content, new_category, new_name or None, doc_id)
+                ).fetchone()
+                if updated:
+                    save_chunks(conn, doc_id, chunks)
+        except UniqueViolation:
+            return jsonify({
+                "status": "error",
+                "message": f"A document with the name '{new_name}' already exists."
+            }), 409
+        
+        if not updated:
             return jsonify({"status": "error", "message": "Document not found."}), 404
-        
-        # Get existing metadata and update it
-        metadata = existing['metadatas'][0] if existing['metadatas'] and len(existing['metadatas']) > 0 else {}
-        metadata['updated'] = "true"
-        metadata['updated_at'] = datetime.now().isoformat()
-        # Only update name if a new one is provided, otherwise keep existing
-        if new_name:
-            metadata['name'] = new_name
-        # Category is mandatory, always update
-        metadata['category'] = new_category
-        
-        # Update the document in ChromaDB
-        dummy_vector = [[0.1] * 384]
-        collection.update(
-            ids=[doc_id],
-            documents=[new_content],
-            embeddings=dummy_vector,
-            metadatas=[metadata]
-        )
         
         return jsonify({
             "status": "success",
@@ -588,11 +606,102 @@ def delete_document(doc_id):
         JSON response with status and message
     """
     try:
-        collection.delete(ids=[doc_id])
+        # RETURNING id tells us whether a row was actually deleted (None = no such document).
+        # The document's chunks are removed automatically by ON DELETE CASCADE.
+        with pool.connection() as conn:
+            deleted = conn.execute(
+                "DELETE FROM documents WHERE id = %s RETURNING id", (doc_id,)
+            ).fetchone()
+        
+        if not deleted:
+            return jsonify({"status": "error", "message": "Document not found."}), 404
+        
         return jsonify({
             "status": "success",
             "message": f"Document {doc_id} deleted successfully."
         })
+    except Exception as e:
+        return jsonify({"status": "error", "message": str(e)}), 500
+
+
+# ========================================
+# ROUTE: SEARCH PAGE
+# ========================================
+
+@app.route('/search', methods=['GET'])
+def search():
+    """
+    Serve the search page (ask a question in plain English).
+    
+    Returns:
+        str: Rendered HTML template
+    """
+    return render_template('search.html')
+
+
+# ========================================
+# ROUTE: NATURAL LANGUAGE QUERY
+# ========================================
+
+@app.route('/query', methods=['GET'])
+def query_documents():
+    """
+    Find the documents that best match a plain-English question.
+    
+    Uses hybrid search (see search.py): semantic search with the local embedding model
+    and pgvector, combined with PostgreSQL keyword search. Weak matches are left out.
+    
+    Query parameters:
+        - q: The question, e.g. "how do I give feedback to users?"
+        - category: (optional) only search documents in this category
+        
+    Returns:
+        JSON response with the top matching documents, best first
+    """
+    question = request.args.get('q', '').strip()
+    category = request.args.get('category', '').strip()
+    if not question:
+        return jsonify({"status": "error", "message": "Please enter a question."}), 400
+    
+    try:
+        results = search_documents(question, category=category or None)
+        return jsonify({"status": "success", "question": question, "results": results})
+    except Exception as e:
+        return jsonify({"status": "error", "message": str(e)}), 500
+
+
+# ========================================
+# ROUTE: WRITTEN ANSWER
+# ========================================
+
+@app.route('/answer', methods=['GET'])
+def answer_question():
+    """
+    Write a short answer to a plain-English question from the most relevant documents.
+    
+    Runs the same search as /query, then a local language model (Ollama, see answers.py)
+    writes an answer using only the top passages. The sources returned are the passages
+    closest in meaning to the answer, so the user can check it against the documents.
+    
+    Query parameters:
+        - q: The question
+        - category: (optional) only use documents in this category
+        
+    Returns:
+        JSON response with the answer and the source documents it was based on
+    """
+    question = request.args.get('q', '').strip()
+    category = request.args.get('category', '').strip()
+    if not question:
+        return jsonify({"status": "error", "message": "Please enter a question."}), 400
+    
+    try:
+        results = search_documents(question, category=category or None)
+        answer = generate_answer(question, results)
+        return jsonify({"status": "success", "question": question, **answer})
+    except AnswerUnavailable as e:
+        # 503 = Service Unavailable: Ollama isn't running or the model isn't downloaded
+        return jsonify({"status": "error", "message": str(e)}), 503
     except Exception as e:
         return jsonify({"status": "error", "message": str(e)}), 500
 
@@ -607,34 +716,37 @@ def debug_database():
     Debug endpoint to inspect the database contents.
     
     Returns:
-        JSON response with collection info and formatted document data
+        JSON response with table info and formatted document data
     """
     try:
-        # Get collection statistics
-        count = collection.count()
+        with pool.connection() as conn:
+            rows = conn.execute(
+                """
+                SELECT id, name, category, source, created_at, updated_at,
+                       LEFT(content, 100) AS content_preview,
+                       LENGTH(content) AS content_length,
+                       (SELECT COUNT(*) FROM document_chunks c WHERE c.document_id = documents.id) AS chunk_count
+                FROM documents
+                ORDER BY created_at NULLS FIRST, id
+                """
+            ).fetchall()
         
-        # Get all documents
-        results = collection.get()
-        
-        # Format documents with metadata for easier debugging
-        formatted_docs = []
-        if results['documents']:
-            for i, doc in enumerate(results['documents']):
-                metadata = results['metadatas'][i] if results['metadatas'] and i < len(results['metadatas']) else {}
-                formatted_docs.append({
-                    "id": results['ids'][i] if results['ids'] and i < len(results['ids']) else f"doc_{i}",
-                    "name": metadata.get('name', 'Untitled'),
-                    "category": metadata.get('category', 'Uncategorized'),
-                    "source": metadata.get('source', 'Unknown'),
-                    "created_at": metadata.get('created_at'),
-                    "updated_at": metadata.get('updated_at'),
-                    "content_preview": doc[:100] if len(doc) > 100 else doc,
-                    "content_length": len(doc)
-                })
+        formatted_docs = [{
+            "id": row['id'],
+            "name": row['name'],
+            "category": row['category'],
+            "source": row['source'],
+            "created_at": to_iso(row['created_at']),
+            "updated_at": to_iso(row['updated_at']),
+            "content_preview": row['content_preview'],
+            "content_length": row['content_length'],
+            "chunk_count": row['chunk_count']
+        } for row in rows]
         
         debug_info = {
-            "collection_name": collection.name,
-            "document_count": count,
+            "database": "PostgreSQL",
+            "table_name": "documents",
+            "document_count": len(formatted_docs),
             "documents": formatted_docs
         }
         
